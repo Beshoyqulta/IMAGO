@@ -12,9 +12,5 @@ services:
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
-      - key: APP_SECRET
-        generateValue: true
-      - key: SERVANT_PASSCODES
-        sync: false
       - key: CORS_ORIGINS
         value: https://imago-youth.onrender.com
