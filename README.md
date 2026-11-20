@@ -13,4 +13,6 @@ Full-stack points and leaderboard app for the Imago Youth Sanawy meeting.
 
 Create a Render Web Service from this repository. Render can use `render.yaml`; add `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `SERVANT_PASSCODES` in the dashboard. `APP_SECRET` is generated automatically by the blueprint. The service serves both the frontend and API.
 
+The included Render configuration pins Python to 3.12 so dependencies such as `pydantic-core` install from prebuilt wheels instead of attempting a Rust compilation on Python 3.14.
+
 Use unique passcodes per servant. Never put the Supabase service-role key in the frontend or commit it.
