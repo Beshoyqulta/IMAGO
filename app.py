@@ -18,9 +18,17 @@ app = FastAPI(title="Imago Youth API", version="2.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=os.getenv("CORS_ORIGINS", "*").split(","), allow_methods=["*"], allow_headers=["*"])
 
 def db() -> Client:
-    url, key = os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    url = (os.getenv("SUPABASE_URL") or "").strip().strip('"').strip("'")
+    key = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip().strip('"').strip("'")
     if not url or not key: raise HTTPException(503, "Supabase is not configured")
-    return create_client(url, key)
+    if key.startswith(("sb_secret_", "sb_publishable_")):
+        raise HTTPException(503, "Use the legacy Supabase service_role JWT key here (it starts with eyJ), not an sb_secret_ or sb_publishable_ key")
+    if not key.startswith("eyJ"):
+        raise HTTPException(503, "SUPABASE_SERVICE_ROLE_KEY must be the legacy service_role JWT from Supabase Project Settings > API Keys")
+    try:
+        return create_client(url, key)
+    except Exception as exc:
+        raise HTTPException(503, "Invalid SUPABASE_SERVICE_ROLE_KEY. Copy the legacy service_role JWT from the same Supabase project.") from exc
 
 class AuthPayload(BaseModel):
     username: str = Field(min_length=3, max_length=40); password: str = Field(min_length=8, max_length=128); role: Literal["youth", "servant"] = "youth"; name: Optional[str] = Field(default=None, max_length=100); gender: Optional[Literal["boy", "girl"]] = None; grade: Optional[Literal["1", "2", "3"]] = None
@@ -61,7 +69,11 @@ def signup(payload: AuthPayload):
     username=payload.username.strip().lower(); internal_email=account_email(username)
     if payload.role == "youth" and (not payload.name or not payload.gender): raise HTTPException(400, "Name and gender are required for youth accounts")
     try: result=client.auth.admin.create_user({"email": internal_email, "password": payload.password, "email_confirm": True, "user_metadata": {"username": username, "role": payload.role}})
-    except Exception as exc: raise HTTPException(400, str(exc))
+    except Exception as exc:
+        detail=str(exc)
+        if "not allowed" in detail.lower() or "signup" in detail.lower():
+            raise HTTPException(503, "Supabase is not allowing account creation. Set Render's SUPABASE_SERVICE_ROLE_KEY to the legacy service_role key, and enable Email signups in Supabase Authentication settings.") from exc
+        raise HTTPException(400, detail) from exc
     user=result.user
     if not user: raise HTTPException(400, "Could not create account")
     youth_id=None
@@ -74,7 +86,7 @@ def signup(payload: AuthPayload):
 @app.post("/api/auth/login")
 def login(payload: AuthPayload):
     try: result=db().auth.sign_in_with_password({"email":account_email(payload.username),"password":payload.password})
-    except Exception: raise HTTPException(401, "Incorrect email or password")
+    except Exception: raise HTTPException(401, "Incorrect username or password")
     if not result.session: raise HTTPException(401, "Please confirm your email before logging in")
     profile=db().table("profiles").select("role,youth_id,username").eq("user_id", result.user.id).maybe_single().execute().data
     if not profile: raise HTTPException(403, "Account profile is not configured")
