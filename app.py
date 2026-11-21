@@ -38,6 +38,10 @@ def db() -> Client:
     except Exception as exc:
         raise HTTPException(503, "Invalid SUPABASE_SERVICE_ROLE_KEY. Copy a valid server-side Supabase secret/service-role key from the same project.") from exc
 
+def first_row(query):
+    rows = query.execute().data or []
+    return rows[0] if rows else None
+
 class AuthPayload(BaseModel):
     username: str = Field(min_length=3, max_length=40); password: str = Field(min_length=8, max_length=128); role: Literal["youth", "servant"] = "youth"; name: Optional[str] = Field(default=None, max_length=100); gender: Optional[Literal["boy", "girl"]] = None; grade: Optional[Literal["1", "2", "3"]] = None
 class AwardIn(BaseModel):
@@ -69,7 +73,7 @@ def account_for(token: Optional[str]):
     except ValueError: raise HTTPException(401, "Invalid or expired login")
     expected = hmac.new(os.getenv("APP_SECRET", "change-this-secret").encode(), body.encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(signature, expected) or int(expiry) < int(time.time()): raise HTTPException(401, "Invalid or expired login")
-    account=db().table("accounts").select("user_id,username,password_hash,role,youth_id").eq("user_id", user_id).maybe_single().execute().data
+    account=first_row(db().table("accounts").select("user_id,username,password_hash,role,youth_id").eq("user_id", user_id))
     if not account: raise HTTPException(401, "Invalid or expired login")
     return account
 
@@ -103,7 +107,7 @@ def signup(payload: AuthPayload):
     if not re.fullmatch(r"[a-z0-9_]{3,40}", username): raise HTTPException(400, "Username must be 3-40 characters: letters, numbers, or underscores only")
     if payload.role == "youth" and (not payload.name or not payload.gender): raise HTTPException(400, "Name and gender are required for youth accounts")
     try:
-        existing = client.table("accounts").select("user_id").eq("username", username).maybe_single().execute().data
+        existing = first_row(client.table("accounts").select("user_id").eq("username", username))
     except Exception as exc:
         if "permission denied" in str(exc).lower() or "42501" in str(exc):
             raise HTTPException(503, "Supabase is using an anon/publishable key. Set SUPABASE_SERVICE_ROLE_KEY in Render to the server-side service_role/secret key from this same project.") from exc
@@ -117,7 +121,7 @@ def signup(payload: AuthPayload):
 
 @app.post("/api/auth/login")
 def login(payload: AuthPayload):
-    username=payload.username.strip().lower(); account=db().table("accounts").select("user_id,username,password_hash,role,youth_id").eq("username", username).maybe_single().execute().data
+    username=payload.username.strip().lower(); account=first_row(db().table("accounts").select("user_id,username,password_hash,role,youth_id").eq("username", username))
     if not account or not password_ok(payload.password, account["password_hash"]): raise HTTPException(401, "Incorrect username or password")
     return {"access_token":session_token(account["user_id"]),"user":{"username":account["username"],"role":account["role"],"youth_id":account["youth_id"]}}
 
@@ -152,7 +156,7 @@ def mark_read(youth_id: UUID, item=Depends(current_profile)):
 
 @app.post("/api/awards")
 def award(payload: AwardIn, item=Depends(require_role("servant"))):
-    client=db(); youth=client.table("youth").select("id").eq("id",str(payload.youth_id)).eq("active",True).maybe_single().execute().data
+    client=db(); youth=first_row(client.table("youth").select("id").eq("id",str(payload.youth_id)).eq("active",True))
     if not youth: raise HTTPException(404,"Youth profile not found")
     row={"youth_id":str(payload.youth_id),"category":payload.category,"points":payload.points,"note":payload.note,"awarded_by":item["username"]}
     client.table("awards").insert(row).execute(); client.table("notifications").insert(row).execute(); return {"ok":True}
