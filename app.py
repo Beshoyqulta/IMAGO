@@ -45,7 +45,7 @@ def first_row(query):
 class AuthPayload(BaseModel):
     username: str = Field(min_length=3, max_length=40); password: str = Field(min_length=8, max_length=128); role: Literal["youth", "servant"] = "youth"; name: Optional[str] = Field(default=None, max_length=100); gender: Optional[Literal["boy", "girl"]] = None; grade: Optional[Literal["1", "2", "3"]] = None
 class AwardIn(BaseModel):
-    youth_id: UUID; category: Literal["early", "bible_read", "verse_recite", "involvement", "misc"]; points: int = Field(gt=0, le=100); note: Optional[str] = Field(default=None, max_length=240)
+    youth_id: UUID; category: Literal["early", "bible_read", "verse_recite", "involvement", "misc"]; points: int = Field(ge=-100, le=100); note: Optional[str] = Field(default=None, max_length=240)
 class YouthIn(BaseModel):
     name: str = Field(min_length=1, max_length=100); gender: Literal["boy", "girl"]; grade: Optional[str] = Field(default=None, max_length=40)
 
@@ -156,6 +156,7 @@ def mark_read(youth_id: UUID, item=Depends(current_profile)):
 
 @app.post("/api/awards")
 def award(payload: AwardIn, item=Depends(require_role("servant"))):
+    if payload.points == 0: raise HTTPException(400, "Points cannot be zero")
     client=db(); youth=first_row(client.table("youth").select("id").eq("id",str(payload.youth_id)).eq("active",True))
     if not youth: raise HTTPException(404,"Youth profile not found")
     row={"youth_id":str(payload.youth_id),"category":payload.category,"points":payload.points,"note":payload.note,"awarded_by":item["username"]}
