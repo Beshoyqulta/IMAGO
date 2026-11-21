@@ -1,5 +1,7 @@
+import base64
 import hashlib
 import hmac
+import json
 import os
 import re
 import secrets
@@ -25,14 +27,16 @@ def db() -> Client:
     url = (os.getenv("SUPABASE_URL") or "").strip().strip('"').strip("'")
     key = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip().strip('"').strip("'")
     if not url or not key: raise HTTPException(503, "Supabase is not configured")
-    if key.startswith(("sb_secret_", "sb_publishable_")):
-        raise HTTPException(503, "Use the legacy Supabase service_role JWT key here (it starts with eyJ), not an sb_secret_ or sb_publishable_ key")
-    if not key.startswith("eyJ"):
-        raise HTTPException(503, "SUPABASE_SERVICE_ROLE_KEY must be the legacy service_role JWT from Supabase Project Settings > API Keys")
+    if key.startswith("eyJ"):
+        try:
+            role=json.loads(base64.urlsafe_b64decode(key.split(".")[1]+"===").decode()).get("role")
+            if role != "service_role": raise HTTPException(503, "SUPABASE_SERVICE_ROLE_KEY is an anon key. Copy the service_role key, not the anon key.")
+        except HTTPException: raise
+        except Exception: raise HTTPException(503, "SUPABASE_SERVICE_ROLE_KEY is not a valid Supabase JWT")
     try:
         return create_client(url, key)
     except Exception as exc:
-        raise HTTPException(503, "Invalid SUPABASE_SERVICE_ROLE_KEY. Copy the legacy service_role JWT from the same Supabase project.") from exc
+        raise HTTPException(503, "Invalid SUPABASE_SERVICE_ROLE_KEY. Copy a valid server-side Supabase secret/service-role key from the same project.") from exc
 
 class AuthPayload(BaseModel):
     username: str = Field(min_length=3, max_length=40); password: str = Field(min_length=8, max_length=128); role: Literal["youth", "servant"] = "youth"; name: Optional[str] = Field(default=None, max_length=100); gender: Optional[Literal["boy", "girl"]] = None; grade: Optional[Literal["1", "2", "3"]] = None
@@ -84,7 +88,13 @@ def require_role(role: str):
     return dep
 
 @app.get("/api/health")
-def health(): return {"ok": True, "service": "imago-youth"}
+def health():
+    key=(os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip().strip('"').strip("'")
+    legacy_role=None
+    if key.startswith("eyJ"):
+        try: legacy_role=json.loads(base64.urlsafe_b64decode(key.split(".")[1]+"===").decode()).get("role")
+        except Exception: legacy_role="invalid-jwt"
+    return {"ok":True,"service":"imago-youth","supabase_url_set":bool(os.getenv("SUPABASE_URL")),"key_prefix":key[:12],"key_length":len(key),"legacy_role":legacy_role}
 
 @app.post("/api/auth/signup")
 def signup(payload: AuthPayload):
@@ -92,7 +102,13 @@ def signup(payload: AuthPayload):
     username=payload.username.strip().lower()
     if not re.fullmatch(r"[a-z0-9_]{3,40}", username): raise HTTPException(400, "Username must be 3-40 characters: letters, numbers, or underscores only")
     if payload.role == "youth" and (not payload.name or not payload.gender): raise HTTPException(400, "Name and gender are required for youth accounts")
-    if client.table("accounts").select("user_id").eq("username", username).maybe_single().execute().data: raise HTTPException(409, "Username is already taken")
+    try:
+        existing = client.table("accounts").select("user_id").eq("username", username).maybe_single().execute().data
+    except Exception as exc:
+        if "permission denied" in str(exc).lower() or "42501" in str(exc):
+            raise HTTPException(503, "Supabase is using an anon/publishable key. Set SUPABASE_SERVICE_ROLE_KEY in Render to the server-side service_role/secret key from this same project.") from exc
+        raise
+    if existing: raise HTTPException(409, "Username is already taken")
     youth_id=None
     if payload.role == "youth": youth_id=client.table("youth").insert({"name":payload.name,"gender":payload.gender,"grade":payload.grade}).execute().data[0]["id"]
     user_id=str(uuid4())
